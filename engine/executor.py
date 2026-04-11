@@ -4,7 +4,7 @@ import operator
 import os
 
 import pandas as pd
-from engine.parser import Condition
+from engine.parser import AggregateExpr, Condition
 
 
 def load_csv(path: str) -> pd.DataFrame:
@@ -64,3 +64,93 @@ def apply_filters(df: pd.DataFrame, conditions: list[Condition]) -> pd.DataFrame
         combined = mask if combined is None else (combined & mask)
 
     return df[combined]
+
+
+# Aggregates that require a numeric column (INV-E4).
+_NUMERIC_AGGS = {'SUM', 'AVG', 'MIN', 'MAX'}
+
+
+def apply_aggregation(
+    df: pd.DataFrame,
+    group_by_cols: list[str],
+    agg_exprs: list[AggregateExpr],
+) -> pd.DataFrame:
+    """
+    Apply GROUP BY + aggregation to *df*.
+
+    - No group_by_cols + agg_exprs  -> scalar aggregation over entire df, one row result.
+    - group_by_cols non-empty       -> df.groupby(...) then aggregate.
+    - SUM/AVG/MIN/MAX on non-numeric column raises ValueError before pandas runs (INV-E4).
+    - COUNT works on any column dtype.
+    - Output column name is alias if provided, else f"{func}({column})".
+    - Returned DataFrame has no pandas index columns (INV-O3).
+    - Never uses df.query() or df.eval() (INV-E5).
+    """
+    if not agg_exprs:
+        return df
+
+    # Validate numeric requirement before touching pandas (INV-E4).
+    for expr in agg_exprs:
+        if expr.func in _NUMERIC_AGGS:
+            if expr.column not in df.columns:
+                raise ValueError(f"Column not found: {expr.column}")
+            if not pd.api.types.is_numeric_dtype(df[expr.column]):
+                raise ValueError(
+                    f"Aggregation {expr.func} requires numeric column: {expr.column}"
+                )
+
+    def _output_name(expr: AggregateExpr) -> str:
+        return expr.alias if expr.alias else f"{expr.func}({expr.column})"
+
+    def _aggregate_series(series: pd.Series, func: str) -> pd.Series:
+        if func == 'COUNT':
+            return series.count()
+        if func == 'SUM':
+            return series.sum()
+        if func == 'AVG':
+            return series.mean()
+        if func == 'MIN':
+            return series.min()
+        if func == 'MAX':
+            return series.max()
+        raise ValueError(f"Unsupported aggregate function: {func}")
+
+    if not group_by_cols:
+        # Scalar aggregation: produce a single-row DataFrame.
+        row = {}
+        for expr in agg_exprs:
+            if expr.column not in df.columns:
+                raise ValueError(f"Column not found: {expr.column}")
+            row[_output_name(expr)] = _aggregate_series(df[expr.column], expr.func)
+        return pd.DataFrame([row])
+
+    # Grouped aggregation.
+    grouped = df.groupby(group_by_cols)
+    agg_map = {}
+    for expr in agg_exprs:
+        if expr.column not in df.columns:
+            raise ValueError(f"Column not found: {expr.column}")
+        agg_map[expr.column] = agg_map.get(expr.column, [])
+        agg_map[expr.column].append(expr.func)
+
+    # Build per-column aggregation mapping for pandas.
+    pandas_agg = {}
+    for expr in agg_exprs:
+        func_name = {
+            'COUNT': 'count', 'SUM': 'sum', 'AVG': 'mean',
+            'MIN': 'min', 'MAX': 'max',
+        }[expr.func]
+        pandas_agg[expr.column] = pandas_agg.get(expr.column, {})
+        pandas_agg[expr.column][_output_name(expr)] = func_name
+
+    # pandas named aggregation syntax: col=(source_col, func)
+    named_agg = {}
+    for expr in agg_exprs:
+        func_name = {
+            'COUNT': 'count', 'SUM': 'sum', 'AVG': 'mean',
+            'MIN': 'min', 'MAX': 'max',
+        }[expr.func]
+        named_agg[_output_name(expr)] = pd.NamedAgg(column=expr.column, aggfunc=func_name)
+
+    result = grouped.agg(**named_agg).reset_index()
+    return result
