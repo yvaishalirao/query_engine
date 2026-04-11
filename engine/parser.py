@@ -97,6 +97,10 @@ class _SQLTransformer(Transformer):
         # ast.literal_eval safely strips and unescapes them.
         return _ast.literal_eval(str(items[0]))
 
+    def single_string_val(self, items):
+        # SINGLE_QUOTED_STRING: strip the surrounding single quotes.
+        return str(items[0])[1:-1]
+
     def number_val(self, items):
         s = str(items[0])
         try:

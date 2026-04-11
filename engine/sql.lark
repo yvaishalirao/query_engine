@@ -79,9 +79,13 @@ where_clause : WHERE condition (AND condition)*
 // Single predicate: column OP literal-value.
 condition : IDENTIFIER OP value
 
-// Values are quoted strings or signed numbers; transformer coerces to Python types.
-value : ESCAPED_STRING  -> string_val
-      | SIGNED_NUMBER   -> number_val
+// Values are quoted strings (single or double) or signed numbers.
+// SINGLE_QUOTED_STRING covers SQL-style 'value' literals.
+SINGLE_QUOTED_STRING : "'" /[^']*/ "'"
+
+value : ESCAPED_STRING        -> string_val
+      | SINGLE_QUOTED_STRING  -> single_string_val
+      | SIGNED_NUMBER         -> number_val
 
 // ---- GROUP BY ----
 
