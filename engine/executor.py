@@ -4,7 +4,10 @@ import operator
 import os
 
 import pandas as pd
-from engine.parser import AggregateExpr, ColumnRef, Condition, OrderByClause, SelectStatement
+from engine.parser import (
+    AggregateExpr, AndExpr, BooleanExpr, ColumnRef, Condition,
+    OrderByClause, OrExpr, SelectStatement,
+)
 
 
 def load_csv(path: str) -> pd.DataFrame:
@@ -45,25 +48,48 @@ _OPS = {
 }
 
 
-def apply_filters(df: pd.DataFrame, conditions: list[Condition]) -> pd.DataFrame:
+def _eval_condition(df: pd.DataFrame, cond: Condition) -> pd.Series:
     """
-    Apply WHERE conditions to *df* and return the filtered result.
+    Evaluate a single Condition against *df* and return a boolean mask.
 
-    Each condition is evaluated as an explicit boolean mask (INV-E5: no df.query/eval).
-    Masks are AND-chained. The source DataFrame is never mutated (INV-E1).
-    Raises ValueError if a condition references a column not present in *df* (INV-E3).
+    Raises ValueError if the referenced column is absent (INV-E3).
+    Never uses df.query() or df.eval() (INV-E5).
     """
-    if not conditions:
+    if cond.column not in df.columns:
+        raise ValueError(f"Column not found: {cond.column}")
+    return _OPS[cond.operator](df[cond.column], cond.value)
+
+
+def _eval_bool_expr(df: pd.DataFrame, expr: BooleanExpr) -> pd.Series:
+    """
+    Recursively evaluate a BooleanExpr tree and return a combined boolean mask.
+
+    AndExpr  -> left & right  (both sub-trees must be True)
+    OrExpr   -> left | right  (either sub-tree may be True)
+    Condition -> single-column comparison mask
+    """
+    if isinstance(expr, Condition):
+        return _eval_condition(df, expr)
+    elif isinstance(expr, AndExpr):
+        return _eval_bool_expr(df, expr.left) & _eval_bool_expr(df, expr.right)
+    elif isinstance(expr, OrExpr):
+        return _eval_bool_expr(df, expr.left) | _eval_bool_expr(df, expr.right)
+    else:
+        raise ValueError(f"Unknown expression type: {type(expr)}")
+
+
+def apply_filters(df: pd.DataFrame, where: BooleanExpr | None) -> pd.DataFrame:
+    """
+    Apply the WHERE BooleanExpr tree to *df* and return the filtered result.
+
+    Returns df unchanged when where is None (no WHERE clause).
+    The source DataFrame is never mutated (INV-E1).
+    Never uses df.query() or df.eval() (INV-E5).
+    """
+    if where is None:
         return df
-
-    combined = None
-    for cond in conditions:
-        if cond.column not in df.columns:
-            raise ValueError(f"Column not found: {cond.column}")
-        mask = _OPS[cond.operator](df[cond.column], cond.value)
-        combined = mask if combined is None else (combined & mask)
-
-    return df[combined]
+    mask = _eval_bool_expr(df, where)
+    return df[mask]
 
 
 # Aggregates that require a numeric column (INV-E4).
@@ -238,8 +264,9 @@ def execute(stmt: SelectStatement, csv_path: str) -> pd.DataFrame:
     for col in stmt.columns:
         if isinstance(col, ColumnRef) and col.name != '*':
             cols_to_check.append(col.name)
-    cols_to_check += [c.column for c in stmt.where]
     cols_to_check += stmt.group_by
+    # WHERE column validation is handled inside _eval_condition as the tree is
+    # traversed — missing columns raise ValueError before any row is returned.
     # ORDER BY column is validated after aggregation (it may be an aggregate alias
     # that does not exist in the CSV — apply_sort raises ValueError if absent then).
     validate_columns(df, cols_to_check)
