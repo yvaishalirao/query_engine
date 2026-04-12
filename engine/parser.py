@@ -9,16 +9,24 @@ Dataclass roles:
   AndExpr         — a boolean AND node in the WHERE expression tree; holds a left
                     and right child, each of which is a BooleanExpr.
   OrExpr          — a boolean OR node in the WHERE expression tree; same shape as
-                    AndExpr. Included for future grammar support — the current
-                    grammar still rejects OR at parse time (INV-P2).
+                    AndExpr.
   BooleanExpr     — type alias: Condition | AndExpr | OrExpr. The WHERE clause of
                     a SelectStatement is a single optional BooleanExpr root, which
                     the executor evaluates recursively. A flat list of conditions
                     would have required the executor to assume implicit AND; the
                     tree makes the logical structure explicit and extensible.
+  SubquerySource  — a nested SelectStatement used as the FROM source in place of
+                    a plain table name. Carries an optional alias. The structure
+                    is recursive: a SubquerySource contains a SelectStatement
+                    whose own table field may itself be a SubquerySource.
+                    execute() uses the _depth field on SelectStatement to enforce
+                    a nesting limit and prevent runaway recursion.
   OrderByClause   — an ORDER BY target column with direction (ASC or DESC).
   SelectStatement — the complete, typed AST for a SELECT query; the only object
-                    accepted by the executor.
+                    accepted by the executor. The table field accepts either a
+                    plain string (CSV table name) or a SubquerySource.
+                    _depth is an internal field set by execute(), not the parser;
+                    it is excluded from repr and equality comparisons.
 
 Lark is imported only in this module. No other engine module may reference lark
 types, token names, or grammar rule names (INV-P4).
@@ -80,14 +88,22 @@ class OrderByClause:
 
 
 @dataclass
+class SubquerySource:
+    """A nested SELECT used as the FROM source instead of a plain table name."""
+    statement: 'SelectStatement'
+    alias: Optional[str] = None
+
+
+@dataclass
 class SelectStatement:
     columns: List[ColumnRef | AggregateExpr]
-    table: str
+    table: str | SubquerySource
     where: Optional[BooleanExpr] = None
     group_by: List[str] = field(default_factory=list)
     having: Optional[BooleanExpr] = None
     order_by: Optional[OrderByClause] = None
     limit: Optional[int] = None
+    _depth: int = field(default=0, repr=False, compare=False)
 
 
 # ── Internal transformer helpers ──────────────────────────────────────────────
