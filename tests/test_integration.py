@@ -90,3 +90,60 @@ def test_or_condition_raises():
 def test_avg_on_non_numeric_raises():
     with pytest.raises(ValueError, match=r"(?i)numeric"):
         run("SELECT AVG(region) AS bad FROM data")
+
+
+# ── Additional branch-coverage tests ─────────────────────────────────────────
+
+def test_scalar_aggregation_no_group_by():
+    # Covers executor.py _aggregate_series + scalar path (lines 106-125)
+    for func in ('COUNT', 'SUM', 'AVG', 'MIN', 'MAX'):
+        result = run(f"SELECT {func}(sales) AS v FROM data")
+        assert len(result) == 1
+        assert 'v' in result.columns
+
+
+def test_column_ref_alias_in_projection():
+    # Covers executor.py _project rename path (lines 206, 214)
+    result = run("SELECT region AS r, sales AS s FROM data LIMIT 2")
+    assert list(result.columns) == ['r', 's']
+    assert len(result) == 2
+
+
+def test_order_by_missing_column_raises():
+    # Covers executor.py apply_sort missing-column ValueError (line 172)
+    with pytest.raises(ValueError, match=r"(?i)column not found"):
+        run("SELECT region FROM data ORDER BY nonexistent_col ASC")
+
+
+def test_validate_columns_wildcard_ignored():
+    # Covers executor.py validate_columns '*' continue branch (line 32)
+    result = run("SELECT * FROM data LIMIT 1")
+    assert len(result) == 1
+    assert list(result.columns) == ['region', 'product', 'sales', 'quantity', 'year']
+
+
+def test_where_missing_column_raises():
+    # Covers apply_filters missing-column ValueError (line 62).
+    # validate_columns in execute() checks SELECT cols; a WHERE-only reference
+    # that is absent from the CSV hits apply_filters' own guard.
+    from engine.executor import apply_filters, load_csv
+    from engine.parser import Condition
+    df = load_csv(CSV)
+    with pytest.raises(ValueError, match=r"Column not found"):
+        apply_filters(df, [Condition('nonexistent', '=', 1)])
+
+
+def test_double_quoted_string_in_where():
+    # Covers parser.py string_val (double-quoted ESCAPED_STRING, line 98)
+    result = run('SELECT * FROM data WHERE region = "North"')
+    assert all(result['region'] == 'North')
+    assert len(result) > 0
+
+
+def test_agg_missing_column_in_grouped_path_raises():
+    # Covers executor.py apply_aggregation grouped missing-column path (line 132)
+    from engine.executor import apply_aggregation, load_csv
+    from engine.parser import AggregateExpr
+    df = load_csv(CSV)
+    with pytest.raises(ValueError, match=r"Column not found"):
+        apply_aggregation(df, ['region'], [AggregateExpr('SUM', 'nonexistent', 'x')])
