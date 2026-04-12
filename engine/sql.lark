@@ -22,6 +22,7 @@ ORDER.2   : /ORDER/i
 ASC.2     : /ASC/i
 DESC.2    : /DESC/i
 LIMIT.2   : /LIMIT/i
+HAVING.2  : /HAVING/i
 AS.2      : /AS/i
 STAR      : "*"
 
@@ -45,7 +46,7 @@ INTEGER : /[0-9]+/
 
 // A complete SELECT query -- the only statement type the engine accepts.
 // Optional clauses are written inline as [clause]; order is enforced structurally.
-select_statement : SELECT select_list FROM table_name [where_clause] [group_by_clause] [order_by_clause] [limit_clause]
+select_statement : SELECT select_list FROM table_name [where_clause] [group_by_clause] [having_clause] [order_by_clause] [limit_clause]
 
 // ---- SELECT list ----
 
@@ -106,6 +107,12 @@ value : ESCAPED_STRING        -> string_val
 // ---- GROUP BY ----
 
 group_by_clause : GROUP BY IDENTIFIER ("," IDENTIFIER)*
+
+// ---- HAVING clause ----
+
+// Structurally identical to WHERE: reuses bool_expr so no rules are duplicated.
+// Positioned after GROUP BY and before ORDER BY in select_statement.
+having_clause : HAVING bool_expr
 
 // ---- ORDER BY ----
 

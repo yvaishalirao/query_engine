@@ -85,16 +85,20 @@ class SelectStatement:
     table: str
     where: Optional[BooleanExpr] = None
     group_by: List[str] = field(default_factory=list)
+    having: Optional[BooleanExpr] = None
     order_by: Optional[OrderByClause] = None
     limit: Optional[int] = None
 
 
 # ── Internal transformer helpers ──────────────────────────────────────────────
 
-# Private namedtuple used only to distinguish the GROUP BY result inside
-# select_statement. It never leaves this module.
-# (_Where is gone: where_clause now returns a BooleanExpr node directly.)
+# Private namedtuples used only to distinguish optional clause results inside
+# select_statement. They never leave this module.
+# (_Where is gone: where_clause returns a BooleanExpr node directly.)
+# _Having wraps the having BooleanExpr so select_statement can tell it apart
+# from the where BooleanExpr — both have the same runtime type.
 _GroupBy = namedtuple('_GroupBy', ['columns'])
+_Having = namedtuple('_Having', ['expr'])
 
 
 def _is_token(item, *types):
@@ -212,6 +216,15 @@ class _SQLTransformer(Transformer):
     def group_by_clause(self, items):
         return _GroupBy(_identifiers(items))
 
+    # ---- having_clause ----
+
+    def having_clause(self, items):
+        # items[0] is the HAVING keyword token; skip it to get the bool_expr root.
+        # Wrapped in _Having so select_statement can distinguish it from the
+        # WHERE BooleanExpr (both have the same runtime type).
+        expr = next(item for item in items if not _is_token(item, 'HAVING'))
+        return _Having(expr)
+
     # ---- order_by_clause ----
 
     def order_by_clause(self, items):
@@ -243,6 +256,7 @@ class _SQLTransformer(Transformer):
 
         where: Optional[BooleanExpr] = None
         group_by: List[str] = []
+        having: Optional[BooleanExpr] = None
         order_by: Optional[OrderByClause] = None
         limit: Optional[int] = None
 
@@ -251,6 +265,8 @@ class _SQLTransformer(Transformer):
                 where = item
             elif isinstance(item, _GroupBy):
                 group_by = item.columns
+            elif isinstance(item, _Having):
+                having = item.expr
             elif isinstance(item, OrderByClause):
                 order_by = item
             elif isinstance(item, int):
@@ -261,6 +277,7 @@ class _SQLTransformer(Transformer):
             table=table,
             where=where,
             group_by=group_by,
+            having=having,
             order_by=order_by,
             limit=limit,
         )
@@ -290,12 +307,18 @@ def parse(query: str) -> SelectStatement:
         context = exc.get_context(query, span=40)
         raise ValueError(
             f"Syntax error in query near: ...{context.strip()}...\n"
-            f"Hint: OR, JOIN, subqueries, and HAVING are not supported."
+            f"Hint: JOIN, subqueries, and HAVING without GROUP BY are not supported."
         ) from None
     except lark.exceptions.LarkError as exc:
         raise ValueError(f"Parse error: {exc}") from None
 
     if not isinstance(result, SelectStatement):
         raise ValueError("Query did not produce a valid SELECT statement.")
+
+    if result.having is not None and not result.group_by:
+        raise ValueError(
+            "HAVING clause requires a GROUP BY clause. "
+            "HAVING filters aggregated groups — it has no effect without GROUP BY."
+        )
 
     return result
