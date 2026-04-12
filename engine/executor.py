@@ -92,6 +92,27 @@ def apply_filters(df: pd.DataFrame, where: BooleanExpr | None) -> pd.DataFrame:
     return df[mask]
 
 
+def _having_columns(expr: BooleanExpr) -> list[str]:
+    """Collect all column names referenced in a BooleanExpr tree (for pre-validation)."""
+    if isinstance(expr, Condition):
+        return [expr.column]
+    elif isinstance(expr, (AndExpr, OrExpr)):
+        return _having_columns(expr.left) + _having_columns(expr.right)
+    return []
+
+
+def apply_having(df: pd.DataFrame, having: BooleanExpr | None) -> pd.DataFrame:
+    """
+    Apply the HAVING BooleanExpr tree to a post-aggregation *df*.
+
+    Intentionally a thin wrapper around apply_filters: the filtering logic is
+    identical — the distinction between WHERE and HAVING is purely positional
+    in the pipeline (WHERE runs before aggregation; HAVING runs after).
+    Returns df unchanged when having is None.
+    """
+    return apply_filters(df, having)
+
+
 # Aggregates that require a numeric column (INV-E4).
 _NUMERIC_AGGS = {'SUM', 'AVG', 'MIN', 'MAX'}
 
@@ -246,8 +267,8 @@ def execute(stmt: SelectStatement, csv_path: str) -> pd.DataFrame:
     Execute a SelectStatement against a CSV file and return the result as a DataFrame.
 
     This is the ONLY public execution entry point (INV-P1).
-    Pipeline order is fixed and structural: load -> validate -> filter ->
-    aggregate -> sort -> limit -> project (INV-E2).
+    Pipeline order is fixed and structural: load -> validate -> filter (WHERE) ->
+    aggregate -> having (HAVING) -> sort -> limit -> project (INV-E2).
     Never uses df.query() or df.eval() (INV-E5).
     """
     # INV-P1: only a fully-typed SelectStatement may enter the executor.
@@ -278,13 +299,20 @@ def execute(stmt: SelectStatement, csv_path: str) -> pd.DataFrame:
     agg_exprs = [col for col in stmt.columns if isinstance(col, AggregateExpr)]
     result = apply_aggregation(result, stmt.group_by, agg_exprs)
 
-    # 5. Sort (INV-E2: after aggregation, before limit).
+    # 5. HAVING (INV-E2: after aggregation, before sort).
+    #    Validate HAVING columns against the post-aggregation DataFrame first so
+    #    missing alias references raise a clear ValueError (INV-E3).
+    if stmt.having is not None:
+        validate_columns(result, _having_columns(stmt.having))
+    result = apply_having(result, stmt.having)
+
+    # 6. Sort (INV-E2: after having, before limit).
     result = apply_sort(result, stmt.order_by)
 
-    # 6. Limit (INV-E2: last, so ORDER BY determines which rows are kept).
+    # 7. Limit (INV-E2: last, so ORDER BY determines which rows are kept).
     result = apply_limit(result, stmt.limit)
 
-    # 7. Project SELECT columns (INV-O3: only named columns, no index or extras).
+    # 8. Project SELECT columns (INV-O3: only named columns, no index or extras).
     result = _project(result, stmt.columns)
 
     return result
