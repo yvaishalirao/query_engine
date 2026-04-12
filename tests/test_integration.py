@@ -81,9 +81,11 @@ def test_missing_column_raises():
         run("SELECT ghost_col FROM data WHERE ghost_col > 0")
 
 
-def test_or_condition_raises():
-    with pytest.raises(ValueError):
-        run("SELECT region FROM data WHERE sales > 1000 OR year = 2022")
+def test_or_condition():
+    result = run("SELECT * FROM data WHERE sales > 1000 OR year = 2022")
+    assert len(result) > 0
+    # Every row must satisfy at least one branch of the OR
+    assert all((result['sales'] > 1000) | (result['year'] == 2022))
 
 
 
@@ -123,14 +125,14 @@ def test_validate_columns_wildcard_ignored():
 
 
 def test_where_missing_column_raises():
-    # Covers apply_filters missing-column ValueError (line 62).
+    # Covers apply_filters missing-column ValueError.
     # validate_columns in execute() checks SELECT cols; a WHERE-only reference
     # that is absent from the CSV hits apply_filters' own guard.
     from engine.executor import apply_filters, load_csv
     from engine.parser import Condition
     df = load_csv(CSV)
     with pytest.raises(ValueError, match=r"Column not found"):
-        apply_filters(df, [Condition('nonexistent', '=', 1)])
+        apply_filters(df, Condition('nonexistent', '=', 1))
 
 
 def test_double_quoted_string_in_where():

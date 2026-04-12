@@ -196,6 +196,21 @@ class _SQLTransformer(Transformer):
     def table_name(self, items):
         return str(items[0])
 
+    # ---- from_clause ----
+
+    def from_clause(self, items):
+        # Discard the FROM keyword token; return str (table_name) or SubquerySource.
+        return next(item for item in items if not _is_token(item, 'FROM'))
+
+    # ---- subquery ----
+
+    def subquery(self, items):
+        # "(" select_statement ")" (AS IDENTIFIER)?
+        inner_stmt = next(item for item in items if isinstance(item, SelectStatement))
+        ids = _identifiers(items)  # alias IDENTIFIER if present (AS keyword is discarded)
+        alias = ids[0] if ids else None
+        return SubquerySource(statement=inner_stmt, alias=alias)
+
     # ---- condition + where_clause ----
 
     def condition(self, items):
@@ -261,14 +276,15 @@ class _SQLTransformer(Transformer):
     # ---- select_statement (top-level rule) ----
 
     def select_statement(self, items):
-        # Discard keyword tokens (SELECT, FROM); keep structured clause results.
+        # Discard keyword tokens (SELECT); keep structured clause results.
+        # FROM is handled inside from_clause — it never reaches select_statement items.
         structured = [
             item for item in items
-            if not _is_token(item, 'SELECT', 'FROM')
+            if not _is_token(item, 'SELECT')
         ]
-        # First two positions are always columns and table name.
+        # First two positions are always columns and from_clause result.
         columns = structured[0]   # list[ColumnRef | AggregateExpr]
-        table = structured[1]     # str
+        table = structured[1]     # str | SubquerySource
 
         where: Optional[BooleanExpr] = None
         group_by: List[str] = []

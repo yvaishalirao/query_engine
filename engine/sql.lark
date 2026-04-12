@@ -1,7 +1,7 @@
 // sql.lark -- grammar for the supported SQL subset
-// Parser: Earley with standard lexer
-// OR, JOIN, subqueries, and HAVING are intentionally absent -- the grammar
-// rejects them at parse time (INV-P2).
+// Parser: Earley with standard lexer (required for recursive subquery rule)
+// Subqueries in FROM are supported. OR conditions and HAVING are supported.
+// JOIN and nested subqueries beyond the FROM position are not supported.
 
 %import common.WS
 %import common.SIGNED_NUMBER
@@ -46,7 +46,7 @@ INTEGER : /[0-9]+/
 
 // A complete SELECT query -- the only statement type the engine accepts.
 // Optional clauses are written inline as [clause]; order is enforced structurally.
-select_statement : SELECT select_list FROM table_name [where_clause] [group_by_clause] [having_clause] [order_by_clause] [limit_clause]
+select_statement : SELECT select_list from_clause [where_clause] [group_by_clause] [having_clause] [order_by_clause] [limit_clause]
 
 // ---- SELECT list ----
 
@@ -70,7 +70,16 @@ aggregate_expr : COUNT "(" IDENTIFIER ")"  -> agg_count
 
 // ---- FROM ----
 
+// from_clause accepts either a plain table name or a parenthesised subquery.
+// Earley mode is required because subquery is recursive (it embeds select_statement).
+from_clause : FROM (table_name | subquery)
+
+// Plain table name: a bare identifier.
 table_name : IDENTIFIER
+
+// Subquery: a full select_statement wrapped in parentheses with an optional alias.
+// The AS keyword and alias follow SQL convention; alias uses the same IDENTIFIER token.
+subquery : "(" select_statement ")" (AS IDENTIFIER)?
 
 // ---- WHERE clause ----
 

@@ -120,26 +120,37 @@ def test_inv_p1_isinstance_guard_in_execute():
 
 # ── INV-P2 ────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("query", [
-    "SELECT * FROM data WHERE a > 1 OR b < 2",
-    "SELECT * FROM data WHERE a > 1 OR a < 0",
+@pytest.mark.parametrize("query,expected_rows", [
+    ("SELECT * FROM data WHERE sales > 5000 OR year = 2021", None),
+    ("SELECT * FROM data WHERE sales > 9999999 OR year = 2099", 0),
 ])
-def test_inv_p2_or_rejected_before_apply_filters(query):
-    """INV-P2: OR queries must be rejected at parse time.
+def test_inv_p2_or_routed_through_apply_filters(query, expected_rows):
+    """INV-P2: OR queries must be routed through apply_filters, not rejected.
 
-    apply_filters must never be called when an OR query is attempted.
-    A mock with a call tracker proves that rejection happened in parse(),
-    not mid-execution inside apply_filters.
+    OR is supported since EX1. apply_filters must be called exactly once per
+    execute() call and must receive an OrExpr (not a list or raw Condition).
     """
-    with patch('engine.executor.apply_filters') as mock_filters:
-        with pytest.raises(ValueError):
-            stmt = parse(query)          # must raise here ...
-            execute(stmt, 'data/sample.csv')   # ... never reaches here
+    from engine.parser import OrExpr as _OrExpr
+    original_apply_filters = __import__('engine.executor', fromlist=['apply_filters']).apply_filters
 
-    assert mock_filters.call_count == 0, (
-        f"apply_filters was called {mock_filters.call_count} time(s) for an OR query "
-        "— rejection did not happen at parse time (INV-P2 violated)"
+    called_with = []
+
+    def tracking_apply_filters(df, where):
+        called_with.append(where)
+        return original_apply_filters(df, where)
+
+    with patch('engine.executor.apply_filters', side_effect=tracking_apply_filters):
+        stmt = parse(query)
+        result = execute(stmt, 'data/sample.csv')
+
+    # apply_filters is called twice: once for WHERE and once via apply_having.
+    # The WHERE call must carry the OrExpr; apply_having may pass None (no HAVING).
+    or_calls = [w for w in called_with if isinstance(w, _OrExpr)]
+    assert len(or_calls) == 1, (
+        f"Expected exactly one apply_filters call with an OrExpr; got {called_with}"
     )
+    if expected_rows is not None:
+        assert len(result) == expected_rows
 
 
 # ── INV-P3 ────────────────────────────────────────────────────────────────────

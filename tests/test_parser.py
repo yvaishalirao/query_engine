@@ -7,7 +7,10 @@ from engine.parser import (
     ColumnRef,
     AggregateExpr,
     Condition,
+    AndExpr,
+    OrExpr,
     OrderByClause,
+    SubquerySource,
 )
 
 
@@ -18,7 +21,7 @@ def test_select_star():
     assert isinstance(stmt, SelectStatement)
     assert stmt.columns == [ColumnRef(name="*")]
     assert stmt.table == "data"
-    assert stmt.where == []
+    assert stmt.where is None
     assert stmt.group_by == []
     assert stmt.order_by is None
     assert stmt.limit is None
@@ -39,15 +42,14 @@ def test_select_aggregate_with_group_by():
 
 def test_where_single_condition():
     stmt = parse("SELECT x FROM data WHERE age > 25")
-    assert len(stmt.where) == 1
-    assert stmt.where[0] == Condition(column="age", operator=">", value=25)
+    assert stmt.where == Condition(column="age", operator=">", value=25)
 
 
 def test_where_and_conditions():
     stmt = parse("SELECT x FROM data WHERE age > 25 AND salary < 50000")
-    assert len(stmt.where) == 2
-    assert stmt.where[0] == Condition("age", ">", 25)
-    assert stmt.where[1] == Condition("salary", "<", 50000)
+    assert isinstance(stmt.where, AndExpr)
+    assert stmt.where.left == Condition("age", ">", 25)
+    assert stmt.where.right == Condition("salary", "<", 50000)
 
 
 def test_order_by_desc_limit():
@@ -68,8 +70,9 @@ def test_full_query_all_clauses():
     assert stmt.columns[0] == ColumnRef("region")
     assert stmt.columns[1] == AggregateExpr("SUM", "sales", "total")
     assert stmt.table == "data"
-    assert stmt.where[0] == Condition("year", "=", 2023)
-    assert stmt.where[1] == Condition("quantity", ">", 10)
+    assert isinstance(stmt.where, AndExpr)
+    assert stmt.where.left == Condition("year", "=", 2023)
+    assert stmt.where.right == Condition("quantity", ">", 10)
     assert stmt.group_by == ["region"]
     assert stmt.order_by == OrderByClause("total", "DESC")
     assert stmt.limit == 3
@@ -97,9 +100,11 @@ def test_all_aggregates():
 
 # ── Rejection cases ───────────────────────────────────────────────────────────
 
-def test_or_condition_raises():
-    with pytest.raises(ValueError, match=r"(?i)syntax error|not supported"):
-        parse("SELECT x FROM data WHERE a > 1 OR b < 2")
+def test_or_condition():
+    stmt = parse("SELECT x FROM data WHERE a > 1 OR b < 2")
+    assert isinstance(stmt.where, OrExpr)
+    assert stmt.where.left == Condition("a", ">", 1)
+    assert stmt.where.right == Condition("b", "<", 2)
 
 
 def test_empty_string_raises():
@@ -117,41 +122,53 @@ def test_unsupported_aggregate_raises():
         parse("SELECT MEDIAN(sales) FROM data")
 
 
-def test_having_raises():
-    with pytest.raises(ValueError):
-        parse("SELECT region, AVG(sales) FROM data GROUP BY region HAVING AVG(sales) > 100")
+def test_having_without_group_by_raises():
+    with pytest.raises(ValueError, match=r"(?i)having.*group by|group by"):
+        parse("SELECT region FROM data HAVING region = 'North'")
 
 
-def test_subquery_raises():
-    with pytest.raises(ValueError):
-        parse("SELECT region FROM (SELECT * FROM data)")
+def test_having_with_group_by():
+    stmt = parse("SELECT region, AVG(sales) AS avg_s FROM data GROUP BY region HAVING avg_s > 100")
+    assert stmt.having == Condition("avg_s", ">", 100)
+
+
+def test_subquery_in_from():
+    stmt = parse("SELECT * FROM (SELECT * FROM data) AS sub")
+    assert isinstance(stmt.table, SubquerySource)
+    assert stmt.table.alias == "sub"
+    assert isinstance(stmt.table.statement, SelectStatement)
+    assert stmt.table.statement.table == "data"
 
 
 # ── Type coercion in WHERE values ─────────────────────────────────────────────
 
 def test_coerce_integer():
     stmt = parse("SELECT x FROM data WHERE age > 25")
-    val = stmt.where[0].value
+    assert isinstance(stmt.where, Condition)
+    val = stmt.where.value
     assert val == 25
     assert isinstance(val, int)
 
 
 def test_coerce_float():
     stmt = parse("SELECT x FROM data WHERE price > 9.99")
-    val = stmt.where[0].value
+    assert isinstance(stmt.where, Condition)
+    val = stmt.where.value
     assert abs(val - 9.99) < 1e-9
     assert isinstance(val, float)
 
 
 def test_coerce_string():
     stmt = parse("SELECT x FROM data WHERE region = 'North'")
-    val = stmt.where[0].value
+    assert isinstance(stmt.where, Condition)
+    val = stmt.where.value
     assert val == "North"
     assert isinstance(val, str)
 
 
 def test_coerce_negative_number():
     stmt = parse("SELECT x FROM data WHERE temp > -5")
-    val = stmt.where[0].value
+    assert isinstance(stmt.where, Condition)
+    val = stmt.where.value
     assert val == -5
     assert isinstance(val, int)
