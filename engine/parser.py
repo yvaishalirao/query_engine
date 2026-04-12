@@ -91,9 +91,9 @@ class SelectStatement:
 
 # ── Internal transformer helpers ──────────────────────────────────────────────
 
-# Private namedtuples used only to distinguish optional clause results inside
-# select_statement. They never leave this module.
-_Where = namedtuple('_Where', ['conditions'])
+# Private namedtuple used only to distinguish the GROUP BY result inside
+# select_statement. It never leaves this module.
+# (_Where is gone: where_clause now returns a BooleanExpr node directly.)
 _GroupBy = namedtuple('_GroupBy', ['columns'])
 
 
@@ -185,7 +185,27 @@ class _SQLTransformer(Transformer):
         return Condition(column=col, operator=op, value=value)
 
     def where_clause(self, items):
-        return _Where([item for item in items if isinstance(item, Condition)])
+        # items[0] is the WHERE keyword token (named terminal, kept by lark).
+        # items[1] is the already-transformed bool_expr root (a BooleanExpr node).
+        return next(item for item in items if not _is_token(item, 'WHERE'))
+
+    def bool_expr(self, items):
+        # OR-level: discard OR keyword tokens, fold bool_term results into OrExpr.
+        # Single item means no OR was present — return it directly.
+        operands = [item for item in items if not _is_token(item, 'OR')]
+        result = operands[0]
+        for item in operands[1:]:
+            result = OrExpr(left=result, right=item)
+        return result
+
+    def bool_term(self, items):
+        # AND-level: discard AND keyword tokens, fold condition results into AndExpr.
+        # Single item means no AND was present — return it directly.
+        operands = [item for item in items if not _is_token(item, 'AND')]
+        result = operands[0]
+        for item in operands[1:]:
+            result = AndExpr(left=result, right=item)
+        return result
 
     # ---- group_by_clause ----
 
@@ -221,14 +241,14 @@ class _SQLTransformer(Transformer):
         columns = structured[0]   # list[ColumnRef | AggregateExpr]
         table = structured[1]     # str
 
-        where: List[Condition] = []
+        where: Optional[BooleanExpr] = None
         group_by: List[str] = []
         order_by: Optional[OrderByClause] = None
         limit: Optional[int] = None
 
         for item in structured[2:]:
-            if isinstance(item, _Where):
-                where = item.conditions
+            if isinstance(item, (Condition, AndExpr, OrExpr)):
+                where = item
             elif isinstance(item, _GroupBy):
                 group_by = item.columns
             elif isinstance(item, OrderByClause):
