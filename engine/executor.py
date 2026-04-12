@@ -4,7 +4,7 @@ import operator
 import os
 
 import pandas as pd
-from engine.parser import AggregateExpr, Condition, OrderByClause
+from engine.parser import AggregateExpr, ColumnRef, Condition, OrderByClause, SelectStatement
 
 
 def load_csv(path: str) -> pd.DataFrame:
@@ -184,3 +184,80 @@ def apply_limit(df: pd.DataFrame, limit: int | None) -> pd.DataFrame:
     if limit is None:
         return df
     return df.head(limit)
+
+
+def _project(df: pd.DataFrame, columns: list) -> pd.DataFrame:
+    """
+    Project the DataFrame down to the columns named in the SELECT list (INV-O3).
+
+    SELECT * -> all columns unchanged.
+    Otherwise: select each column in declaration order, applying any aliases.
+    """
+    if len(columns) == 1 and isinstance(columns[0], ColumnRef) and columns[0].name == '*':
+        return df
+
+    select_names = []
+    rename_map = {}
+
+    for col in columns:
+        if isinstance(col, ColumnRef):
+            select_names.append(col.name)
+            if col.alias:
+                rename_map[col.name] = col.alias
+        elif isinstance(col, AggregateExpr):
+            # apply_aggregation already named the column alias or f"{func}({column})"
+            out_name = col.alias if col.alias else f"{col.func}({col.column})"
+            select_names.append(out_name)
+
+    result = df[select_names]
+    if rename_map:
+        result = result.rename(columns=rename_map)
+    return result
+
+
+def execute(stmt: SelectStatement, csv_path: str) -> pd.DataFrame:
+    """
+    Execute a SelectStatement against a CSV file and return the result as a DataFrame.
+
+    This is the ONLY public execution entry point (INV-P1).
+    Pipeline order is fixed and structural: load -> validate -> filter ->
+    aggregate -> sort -> limit -> project (INV-E2).
+    Never uses df.query() or df.eval() (INV-E5).
+    """
+    # INV-P1: only a fully-typed SelectStatement may enter the executor.
+    assert isinstance(stmt, SelectStatement), (
+        f"execute() requires a SelectStatement, got {type(stmt).__name__}"
+    )
+
+    # 1. Load CSV (file existence check inside load_csv — INV-S3).
+    df = load_csv(csv_path)
+
+    # 2. Validate columns referenced by plain ColumnRefs, WHERE, GROUP BY, ORDER BY.
+    #    Aggregate source columns are validated inside apply_aggregation (INV-E4).
+    cols_to_check = []
+    for col in stmt.columns:
+        if isinstance(col, ColumnRef) and col.name != '*':
+            cols_to_check.append(col.name)
+    cols_to_check += [c.column for c in stmt.where]
+    cols_to_check += stmt.group_by
+    # ORDER BY column is validated after aggregation (it may be an aggregate alias
+    # that does not exist in the CSV — apply_sort raises ValueError if absent then).
+    validate_columns(df, cols_to_check)
+
+    # 3. Filter (INV-E2: before aggregation).
+    result = apply_filters(df, stmt.where)
+
+    # 4. Aggregate.
+    agg_exprs = [col for col in stmt.columns if isinstance(col, AggregateExpr)]
+    result = apply_aggregation(result, stmt.group_by, agg_exprs)
+
+    # 5. Sort (INV-E2: after aggregation, before limit).
+    result = apply_sort(result, stmt.order_by)
+
+    # 6. Limit (INV-E2: last, so ORDER BY determines which rows are kept).
+    result = apply_limit(result, stmt.limit)
+
+    # 7. Project SELECT columns (INV-O3: only named columns, no index or extras).
+    result = _project(result, stmt.columns)
+
+    return result
