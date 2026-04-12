@@ -4,7 +4,7 @@ import operator
 import os
 
 import pandas as pd
-from engine.parser import AggregateExpr, Condition
+from engine.parser import AggregateExpr, Condition, OrderByClause
 
 
 def load_csv(path: str) -> pd.DataFrame:
@@ -154,3 +154,33 @@ def apply_aggregation(
 
     result = grouped.agg(**named_agg).reset_index()
     return result
+
+
+def apply_sort(df: pd.DataFrame, order_by: OrderByClause | None) -> pd.DataFrame:
+    """
+    Sort *df* by the column and direction specified in *order_by*.
+
+    Returns df unchanged if order_by is None.
+    Uses df.sort_values() explicitly — no delegation (INV-E5).
+    The source DataFrame is never mutated (INV-E1).
+    Raises ValueError if the sort column does not exist (INV-E3).
+    """
+    if order_by is None:
+        return df
+
+    if order_by.column not in df.columns:
+        raise ValueError(f"Column not found: {order_by.column}")
+
+    ascending = order_by.direction == 'ASC'
+    return df.sort_values(by=order_by.column, ascending=ascending)
+
+
+def apply_limit(df: pd.DataFrame, limit: int | None) -> pd.DataFrame:
+    """
+    Return the first *limit* rows of *df*.
+
+    Returns df unchanged if limit is None.
+    """
+    if limit is None:
+        return df
+    return df.head(limit)
