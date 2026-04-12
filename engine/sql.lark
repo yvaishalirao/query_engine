@@ -15,6 +15,7 @@ SELECT.2  : /SELECT/i
 FROM.2    : /FROM/i
 WHERE.2   : /WHERE/i
 AND.2     : /AND/i
+OR.2      : /OR/i
 GROUP.2   : /GROUP/i
 BY.2      : /BY/i
 ORDER.2   : /ORDER/i
@@ -72,9 +73,24 @@ table_name : IDENTIFIER
 
 // ---- WHERE clause ----
 
-// AND-only chain. OR is absent from the grammar entirely, so any query using
-// OR triggers UnexpectedInput at parse time (INV-P2).
-where_clause : WHERE condition (AND condition)*
+// Boolean expression hierarchy that encodes SQL operator precedence without
+// explicit directives: AND binds tighter than OR because it sits one level
+// deeper in the grammar.
+//
+//   bool_expr  -- lowest precedence: OR-separated list of bool_terms
+//   bool_term  -- higher precedence: AND-separated list of conditions
+//   condition  -- highest precedence: a single column OP value predicate
+//
+// This means "a > 1 AND b < 5 OR c = 'x'" parses as
+// OR(AND(a>1, b<5), c='x'), matching standard SQL semantics.
+
+where_clause : WHERE bool_expr
+
+// OR-level: one or more AND-groups separated by OR
+bool_expr : bool_term (OR bool_term)*
+
+// AND-level: one or more atomic conditions separated by AND
+bool_term : condition (AND condition)*
 
 // Single predicate: column OP literal-value.
 condition : IDENTIFIER OP value
