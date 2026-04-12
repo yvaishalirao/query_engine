@@ -6,7 +6,16 @@ Dataclass roles:
   AggregateExpr   — an aggregate function call (COUNT/SUM/AVG/MIN/MAX) on a column,
                     with an optional alias.
   Condition       — a single WHERE predicate: column, comparison operator, and value.
-                    Only AND-chained conditions are supported; OR is rejected at parse time.
+  AndExpr         — a boolean AND node in the WHERE expression tree; holds a left
+                    and right child, each of which is a BooleanExpr.
+  OrExpr          — a boolean OR node in the WHERE expression tree; same shape as
+                    AndExpr. Included for future grammar support — the current
+                    grammar still rejects OR at parse time (INV-P2).
+  BooleanExpr     — type alias: Condition | AndExpr | OrExpr. The WHERE clause of
+                    a SelectStatement is a single optional BooleanExpr root, which
+                    the executor evaluates recursively. A flat list of conditions
+                    would have required the executor to assume implicit AND; the
+                    tree makes the logical structure explicit and extensible.
   OrderByClause   — an ORDER BY target column with direction (ASC or DESC).
   SelectStatement — the complete, typed AST for a SELECT query; the only object
                     accepted by the executor.
@@ -49,6 +58,22 @@ class Condition:
 
 
 @dataclass
+class AndExpr:
+    left: 'BooleanExpr'
+    right: 'BooleanExpr'
+
+
+@dataclass
+class OrExpr:
+    left: 'BooleanExpr'
+    right: 'BooleanExpr'
+
+
+# Type alias for the recursive WHERE expression tree.
+BooleanExpr = Condition | AndExpr | OrExpr
+
+
+@dataclass
 class OrderByClause:
     column: str
     direction: Literal['ASC', 'DESC'] = 'ASC'
@@ -58,7 +83,7 @@ class OrderByClause:
 class SelectStatement:
     columns: List[ColumnRef | AggregateExpr]
     table: str
-    where: List[Condition] = field(default_factory=list)
+    where: Optional[BooleanExpr] = None
     group_by: List[str] = field(default_factory=list)
     order_by: Optional[OrderByClause] = None
     limit: Optional[int] = None
