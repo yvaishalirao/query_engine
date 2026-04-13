@@ -6,7 +6,7 @@ import os
 import pandas as pd
 from engine.parser import (
     AggregateExpr, AndExpr, BooleanExpr, ColumnRef, Condition,
-    OrderByClause, OrExpr, SelectStatement,
+    OrderByClause, OrExpr, SelectStatement, SubquerySource,
 )
 
 
@@ -262,13 +262,19 @@ def _project(df: pd.DataFrame, columns: list) -> pd.DataFrame:
     return result
 
 
-def execute(stmt: SelectStatement, csv_path: str) -> pd.DataFrame:
+MAX_SUBQUERY_DEPTH = 3
+
+
+def execute(stmt: SelectStatement, csv_path: str, _depth: int = 0) -> pd.DataFrame:
     """
     Execute a SelectStatement against a CSV file and return the result as a DataFrame.
 
     This is the ONLY public execution entry point (INV-P1).
     Pipeline order is fixed and structural: load -> validate -> filter (WHERE) ->
     aggregate -> having (HAVING) -> sort -> limit -> project (INV-E2).
+    When stmt.table is a SubquerySource the inner statement is executed recursively
+    and its result DataFrame replaces the CSV load step; all subsequent pipeline
+    steps run identically regardless of source.
     Never uses df.query() or df.eval() (INV-E5).
     """
     # INV-P1: only a fully-typed SelectStatement may enter the executor.
@@ -276,8 +282,16 @@ def execute(stmt: SelectStatement, csv_path: str) -> pd.DataFrame:
         f"execute() requires a SelectStatement, got {type(stmt).__name__}"
     )
 
-    # 1. Load CSV (file existence check inside load_csv — INV-S3).
-    df = load_csv(csv_path)
+    if _depth > MAX_SUBQUERY_DEPTH:
+        raise ValueError(
+            f"Subquery nesting depth exceeded (max {MAX_SUBQUERY_DEPTH})"
+        )
+
+    # 1. Produce the source DataFrame: execute the subquery recursively, or load CSV.
+    if isinstance(stmt.table, SubquerySource):
+        df = execute(stmt.table.statement, csv_path, _depth=_depth + 1)
+    else:
+        df = load_csv(csv_path)
 
     # 2. Validate columns referenced by plain ColumnRefs, WHERE, GROUP BY, ORDER BY.
     #    Aggregate source columns are validated inside apply_aggregation (INV-E4).
