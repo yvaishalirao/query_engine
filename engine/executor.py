@@ -6,7 +6,7 @@ import os
 import pandas as pd
 from engine.parser import (
     AggregateExpr, AndExpr, BooleanExpr, ColumnRef, Condition,
-    OrderByClause, OrExpr, SelectStatement, SubquerySource,
+    JoinClause, OrderByClause, OrExpr, SelectStatement, SubquerySource,
 )
 
 
@@ -262,6 +262,36 @@ def _project(df: pd.DataFrame, columns: list) -> pd.DataFrame:
     return result
 
 
+def apply_joins(
+    df: pd.DataFrame,
+    joins: list[JoinClause],
+    csv_dir: str,
+) -> pd.DataFrame:
+    """
+    Apply zero or more JOIN clauses to *df* and return the joined result.
+
+    For each JoinClause the right-hand table is loaded from csv_dir/<table>.csv.
+    INNER JOIN uses how='inner'; LEFT JOIN uses how='left'.
+    pd.merge() is used here — the one explicit exception to INV-E5's spirit:
+    merge is semantically correct for JOIN, not a query filter shortcut.
+    Neither source DataFrame is mutated (INV-E6).
+    Raises ValueError if a join table CSV does not exist (INV-S3 extension).
+    """
+    result = df
+    for join in joins:
+        join_path = os.path.join(csv_dir, f"{join.table}.csv")
+        if not os.path.exists(join_path):
+            raise ValueError(f"Join table not found: {join_path}")
+        right_df = pd.read_csv(join_path)
+        how = 'inner' if join.join_type == 'INNER' else 'left'
+        result = pd.merge(
+            result, right_df,
+            left_on=join.on_left, right_on=join.on_right,
+            how=how,
+        )
+    return result
+
+
 MAX_SUBQUERY_DEPTH = 3
 
 
@@ -270,12 +300,14 @@ def execute(stmt: SelectStatement, csv_path: str, _depth: int = 0) -> pd.DataFra
     Execute a SelectStatement against a CSV file and return the result as a DataFrame.
 
     This is the ONLY public execution entry point (INV-P1).
-    Pipeline order is fixed and structural: load -> validate -> filter (WHERE) ->
-    aggregate -> having (HAVING) -> sort -> limit -> project (INV-E2).
+    Pipeline order is fixed and structural: load -> join (INV-E6) -> validate ->
+    filter (WHERE) -> aggregate -> having (HAVING) -> sort -> limit -> project (INV-E2).
     When stmt.table is a SubquerySource the inner statement is executed recursively
     and its result DataFrame replaces the CSV load step; all subsequent pipeline
     steps run identically regardless of source.
     Never uses df.query() or df.eval() (INV-E5).
+    pd.merge() in apply_joins is the one explicit exception: it is semantically
+    correct for JOIN, not a query filter shortcut.
     """
     # INV-P1: only a fully-typed SelectStatement may enter the executor.
     assert isinstance(stmt, SelectStatement), (
@@ -293,7 +325,13 @@ def execute(stmt: SelectStatement, csv_path: str, _depth: int = 0) -> pd.DataFra
     else:
         df = load_csv(csv_path)
 
-    # 2. Validate columns referenced by plain ColumnRefs, WHERE, GROUP BY, ORDER BY.
+    # 2. Apply JOINs (INV-E6: neither source DataFrame is mutated).
+    #    csv_dir is derived from csv_path so sibling CSVs are found correctly.
+    csv_dir = os.path.dirname(os.path.abspath(csv_path))
+    df = apply_joins(df, stmt.joins, csv_dir)
+
+    # 3. Validate columns referenced by plain ColumnRefs and GROUP BY against the
+    #    post-join DataFrame so that columns introduced by joins are available.
     #    Aggregate source columns are validated inside apply_aggregation (INV-E4).
     cols_to_check = []
     for col in stmt.columns:
@@ -306,27 +344,27 @@ def execute(stmt: SelectStatement, csv_path: str, _depth: int = 0) -> pd.DataFra
     # that does not exist in the CSV — apply_sort raises ValueError if absent then).
     validate_columns(df, cols_to_check)
 
-    # 3. Filter (INV-E2: before aggregation).
+    # 4. Filter (INV-E2: before aggregation).
     result = apply_filters(df, stmt.where)
 
-    # 4. Aggregate.
+    # 5. Aggregate.
     agg_exprs = [col for col in stmt.columns if isinstance(col, AggregateExpr)]
     result = apply_aggregation(result, stmt.group_by, agg_exprs)
 
-    # 5. HAVING (INV-E2: after aggregation, before sort).
+    # 6. HAVING (INV-E2: after aggregation, before sort).
     #    Validate HAVING columns against the post-aggregation DataFrame first so
     #    missing alias references raise a clear ValueError (INV-E3).
     if stmt.having is not None:
         validate_columns(result, _having_columns(stmt.having))
     result = apply_having(result, stmt.having)
 
-    # 6. Sort (INV-E2: after having, before limit).
+    # 7. Sort (INV-E2: after having, before limit).
     result = apply_sort(result, stmt.order_by)
 
-    # 7. Limit (INV-E2: last, so ORDER BY determines which rows are kept).
+    # 8. Limit (INV-E2: last, so ORDER BY determines which rows are kept).
     result = apply_limit(result, stmt.limit)
 
-    # 8. Project SELECT columns (INV-O3: only named columns, no index or extras).
+    # 9. Project SELECT columns (INV-O3: only named columns, no index or extras).
     result = _project(result, stmt.columns)
 
     return result

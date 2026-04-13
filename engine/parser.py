@@ -143,6 +143,11 @@ def _identifiers(items):
     return [str(t) for t in items if _is_token(t, 'IDENTIFIER')]
 
 
+def _bare_col(identifier: str) -> str:
+    """Strip an optional table prefix from a qualified identifier (table.column -> column)."""
+    return identifier.split('.')[-1]
+
+
 # ── Transformer ───────────────────────────────────────────────────────────────
 
 class _SQLTransformer(Transformer):
@@ -190,8 +195,10 @@ class _SQLTransformer(Transformer):
 
     def col_item(self, items):
         # IDENTIFIER (AS IDENTIFIER)?
+        # Strip table prefix (e.g. data.region -> region) so the bare column name
+        # is used for lookup against the post-join DataFrame.
         ids = _identifiers(items)
-        return ColumnRef(name=ids[0], alias=ids[1] if len(ids) > 1 else None)
+        return ColumnRef(name=_bare_col(ids[0]), alias=ids[1] if len(ids) > 1 else None)
 
     def agg_item(self, items):
         # aggregate_expr (AS IDENTIFIER)?  — alias is set onto the AggregateExpr
@@ -259,9 +266,9 @@ class _SQLTransformer(Transformer):
     # ---- condition + where_clause ----
 
     def condition(self, items):
-        col = str(items[0])   # IDENTIFIER token
-        op = str(items[1])    # OP token
-        value = items[2]      # already coerced by string_val / number_val
+        col = _bare_col(str(items[0]))  # strip table prefix if qualified (table.col -> col)
+        op = str(items[1])              # OP token
+        value = items[2]                # already coerced by string_val / number_val
         return Condition(column=col, operator=op, value=value)
 
     def where_clause(self, items):

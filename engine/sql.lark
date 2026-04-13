@@ -37,8 +37,12 @@ MAX.2   : /MAX/i
 // Comparison operators
 OP : "<=" | ">=" | "!=" | "<" | ">" | "="
 
-// Bare identifier for table/column names
-IDENTIFIER : /[a-zA-Z_][a-zA-Z0-9_]*/
+// Bare identifier for table/column names.
+// Supports optional table-qualification (table.column) so that SELECT and WHERE
+// clauses can use fully-qualified references after a JOIN. The table prefix is
+// stripped by the transformer during column lookup — the merged DataFrame always
+// uses bare column names as produced by pd.merge().
+IDENTIFIER : /[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
 
 // Non-negative integer for LIMIT
 INTEGER : /[0-9]+/
