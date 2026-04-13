@@ -1,7 +1,8 @@
 // sql.lark -- grammar for the supported SQL subset
 // Parser: Earley with standard lexer (required for recursive subquery rule)
 // Subqueries in FROM are supported. OR conditions and HAVING are supported.
-// JOIN and nested subqueries beyond the FROM position are not supported.
+// INNER JOIN and LEFT JOIN with equality ON clauses are supported.
+// RIGHT JOIN and FULL OUTER JOIN are not supported (grammar rejects them).
 
 %import common.WS
 %import common.SIGNED_NUMBER
@@ -46,7 +47,8 @@ INTEGER : /[0-9]+/
 
 // A complete SELECT query -- the only statement type the engine accepts.
 // Optional clauses are written inline as [clause]; order is enforced structurally.
-select_statement : SELECT select_list from_clause [where_clause] [group_by_clause] [having_clause] [order_by_clause] [limit_clause]
+// Zero or more join_clauses follow from_clause and precede where_clause.
+select_statement : SELECT select_list from_clause join_clause* [where_clause] [group_by_clause] [having_clause] [order_by_clause] [limit_clause]
 
 // ---- SELECT list ----
 
@@ -80,6 +82,20 @@ table_name : IDENTIFIER
 // Subquery: a full select_statement wrapped in parentheses with an optional alias.
 // The AS keyword and alias follow SQL convention; alias uses the same IDENTIFIER token.
 subquery : "(" select_statement ")" (AS IDENTIFIER)?
+
+// ---- JOIN ----
+
+// INNER JOIN and LEFT JOIN only. ON clause is equality-only: left_col = right_col.
+// RIGHT JOIN and FULL OUTER JOIN are not represented — the grammar rejects them.
+// COLUMN_NAME is a dedicated terminal (priority 1) used for ON column references.
+// Supports both bare names (product) and table-qualified names (table.column)
+// so that ON data.product = products.name is accepted.
+COLUMN_NAME.1 : /[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?/
+
+join_clause : join_type /JOIN/i table_name /ON/i COLUMN_NAME "=" COLUMN_NAME
+
+join_type : /INNER/i  -> join_inner
+          | /LEFT/i   -> join_left
 
 // ---- WHERE clause ----
 

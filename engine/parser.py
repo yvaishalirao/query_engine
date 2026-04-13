@@ -227,6 +227,35 @@ class _SQLTransformer(Transformer):
         alias = ids[0] if ids else None
         return SubquerySource(statement=inner_stmt, alias=alias)
 
+    # ---- join_type + join_clause ----
+
+    def join_inner(self, _items):
+        return 'INNER'
+
+    def join_left(self, _items):
+        return 'LEFT'
+
+    def join_clause(self, items):
+        # items: [join_type str, lark Tokens for /JOIN/i and /ON/i, table str, COLUMN_NAME x2]
+        # join_inner/join_left return plain Python str ('INNER'/'LEFT').
+        # table_name() also returns a plain Python str.
+        # Anonymous regex terminals (/JOIN/i, /ON/i) are lark Token objects (str subclass
+        # with a .type attribute) — exclude them from plain-str comparisons.
+        jtype = next(item for item in items if isinstance(item, str) and item in ('INNER', 'LEFT'))
+        table = next(
+            item for item in items
+            if isinstance(item, str)
+            and item not in ('INNER', 'LEFT')
+            and not hasattr(item, 'type')   # exclude lark Token objects
+        )
+        col_tokens = [t for t in items if _is_token(t, 'COLUMN_NAME')]
+        return JoinClause(
+            table=table,
+            join_type=jtype,
+            on_left=str(col_tokens[0]),
+            on_right=str(col_tokens[1]),
+        )
+
     # ---- condition + where_clause ----
 
     def condition(self, items):
@@ -305,11 +334,14 @@ class _SQLTransformer(Transformer):
         where: Optional[BooleanExpr] = None
         group_by: List[str] = []
         having: Optional[BooleanExpr] = None
+        joins: List[JoinClause] = []
         order_by: Optional[OrderByClause] = None
         limit: Optional[int] = None
 
         for item in structured[2:]:
-            if isinstance(item, (Condition, AndExpr, OrExpr)):
+            if isinstance(item, JoinClause):
+                joins.append(item)
+            elif isinstance(item, (Condition, AndExpr, OrExpr)):
                 where = item
             elif isinstance(item, _GroupBy):
                 group_by = item.columns
@@ -326,6 +358,7 @@ class _SQLTransformer(Transformer):
             where=where,
             group_by=group_by,
             having=having,
+            joins=joins,
             order_by=order_by,
             limit=limit,
         )
