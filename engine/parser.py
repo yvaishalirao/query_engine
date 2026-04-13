@@ -361,6 +361,56 @@ class _SQLTransformer(Transformer):
     def limit_clause(self, items):
         return int(next(str(t) for t in items if _is_token(t, 'INTEGER')))
 
+    # ---- column_list / value_list helpers (INSERT) ----
+
+    def column_list(self, items):
+        return [str(t) for t in items if _is_token(t, 'COLUMN_NAME')]
+
+    def value_list(self, items):
+        # items are already coerced Python values (from string_val / number_val aliases).
+        return [item for item in items if not hasattr(item, 'type')]
+
+    # ---- set_clause (UPDATE) ----
+
+    def set_clause(self, items):
+        col = str(next(t for t in items if _is_token(t, 'COLUMN_NAME')))
+        value = next(item for item in items if not hasattr(item, 'type'))
+        return SetClause(column=col, value=value)
+
+    # ---- insert_statement ----
+
+    def insert_statement(self, items):
+        table = next(item for item in items if isinstance(item, str) and not hasattr(item, 'type'))
+        columns = next(item for item in items if isinstance(item, list) and all(isinstance(c, str) for c in item))
+        values = next(item for item in items if isinstance(item, list) and item is not columns)
+        return InsertStatement(table=table, columns=columns, values=values)
+
+    # ---- update_statement ----
+
+    def update_statement(self, items):
+        table = next(item for item in items if isinstance(item, str) and not hasattr(item, 'type'))
+        set_clauses = [item for item in items if isinstance(item, SetClause)]
+        where = next(
+            (item for item in items if isinstance(item, (Condition, AndExpr, OrExpr))),
+            None
+        )
+        return UpdateStatement(table=table, set_clauses=set_clauses, where=where)
+
+    # ---- delete_statement ----
+
+    def delete_statement(self, items):
+        table = next(item for item in items if isinstance(item, str) and not hasattr(item, 'type'))
+        where = next(
+            (item for item in items if isinstance(item, (Condition, AndExpr, OrExpr))),
+            None
+        )
+        return DeleteStatement(table=table, where=where)
+
+    # ---- statement (top-level dispatcher) ----
+
+    def statement(self, items):
+        return items[0]
+
     # ---- select_statement (top-level rule) ----
 
     def select_statement(self, items):
@@ -410,7 +460,7 @@ class _SQLTransformer(Transformer):
 # ── Grammar loader (cached at module level) ───────────────────────────────────
 
 _GRAMMAR_PATH = Path(__file__).parent / 'sql.lark'
-_PARSER = Lark(_GRAMMAR_PATH.read_text(), parser='earley', start='select_statement')
+_PARSER = Lark(_GRAMMAR_PATH.read_text(), parser='earley', start='statement')
 _TRANSFORMER = _SQLTransformer()
 
 
@@ -441,7 +491,7 @@ def parse(query: str) -> SelectStatement | InsertStatement | UpdateStatement | D
     if not isinstance(result, _valid_types):
         raise ValueError("Query did not produce a valid statement.")
 
-    if result.having is not None and not result.group_by:
+    if isinstance(result, SelectStatement) and result.having is not None and not result.group_by:
         raise ValueError(
             "HAVING clause requires a GROUP BY clause. "
             "HAVING filters aggregated groups — it has no effect without GROUP BY."
