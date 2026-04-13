@@ -21,10 +21,17 @@ Dataclass roles:
                     whose own table field may itself be a SubquerySource.
                     execute() uses the _depth field on SelectStatement to enforce
                     a nesting limit and prevent runaway recursion.
+  JoinClause      — a single JOIN specification: the right-hand table name,
+                    join type (INNER or LEFT), and the equality ON columns
+                    (on_left from the primary table, on_right from the joined
+                    table). join_type is always stored uppercase. Only equality
+                    ON clauses are supported; self-joins are rejected by the
+                    executor (not the parser).
   OrderByClause   — an ORDER BY target column with direction (ASC or DESC).
   SelectStatement — the complete, typed AST for a SELECT query; the only object
                     accepted by the executor. The table field accepts either a
-                    plain string (CSV table name) or a SubquerySource.
+                    plain string (CSV table name) or a SubquerySource. The joins
+                    field holds zero or more JoinClause objects.
                     _depth is an internal field set by execute(), not the parser;
                     it is excluded from repr and equality comparisons.
 
@@ -82,6 +89,14 @@ BooleanExpr = Condition | AndExpr | OrExpr
 
 
 @dataclass
+class JoinClause:
+    table: str
+    join_type: Literal['INNER', 'LEFT']
+    on_left: str   # column from the left (primary) table
+    on_right: str  # column from the right (joined) table
+
+
+@dataclass
 class OrderByClause:
     column: str
     direction: Literal['ASC', 'DESC'] = 'ASC'
@@ -101,6 +116,7 @@ class SelectStatement:
     where: Optional[BooleanExpr] = None
     group_by: List[str] = field(default_factory=list)
     having: Optional[BooleanExpr] = None
+    joins: List[JoinClause] = field(default_factory=list)
     order_by: Optional[OrderByClause] = None
     limit: Optional[int] = None
     _depth: int = field(default=0, repr=False, compare=False)
