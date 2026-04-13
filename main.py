@@ -4,8 +4,11 @@ import argparse
 import os
 import sys
 
+from engine import write_executor
 from engine.executor import execute
-from engine.parser import parse
+from engine.parser import (
+    DeleteStatement, InsertStatement, SelectStatement, UpdateStatement, parse,
+)
 from engine.utils import format_error, format_result
 
 
@@ -18,8 +21,15 @@ def _run_query(query: str, csv_path: str) -> bool:
     """
     try:
         stmt = parse(query)
-        result = execute(stmt, csv_path)
-        print(format_result(result))
+        if isinstance(stmt, SelectStatement):
+            result = execute(stmt, csv_path)
+            print(format_result(result))
+        elif isinstance(stmt, InsertStatement):
+            print(write_executor.execute_insert(stmt, csv_path))
+        elif isinstance(stmt, UpdateStatement):
+            print(write_executor.execute_update(stmt, csv_path))
+        elif isinstance(stmt, DeleteStatement):
+            print(write_executor.execute_delete(stmt, csv_path))
         return True
     except ValueError as exc:
         print(format_error(str(exc)))
@@ -32,7 +42,11 @@ def _run_query(query: str, csv_path: str) -> bool:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="SQL-like query engine for CSV files."
+        description=(
+            "SQL-like query engine for CSV files. "
+            "Supports SELECT (with WHERE, GROUP BY, HAVING, ORDER BY, LIMIT, JOIN, subqueries), "
+            "INSERT INTO, UPDATE SET, and DELETE FROM."
+        )
     )
     parser.add_argument(
         '--csv',
@@ -44,7 +58,11 @@ def main() -> None:
         'query',
         nargs='?',
         default=None,
-        help="SQL query string. Omit to enter interactive mode.",
+        help=(
+            "SQL statement to execute. Omit to enter interactive mode. "
+            "Write operations (INSERT/UPDATE/DELETE) modify the CSV in place "
+            "and create a .bak backup before writing."
+        ),
     )
     args = parser.parse_args()
     csv_path = args.csv
