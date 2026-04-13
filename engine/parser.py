@@ -34,6 +34,14 @@ Dataclass roles:
                     field holds zero or more JoinClause objects.
                     _depth is an internal field set by execute(), not the parser;
                     it is excluded from repr and equality comparisons.
+  SetClause       — a single col = value assignment in an UPDATE statement.
+                    value is coerced to int, float, or str (same rules as WHERE).
+  InsertStatement — AST for INSERT INTO table (cols) VALUES (vals). columns and
+                    values are parallel lists; lengths must match (enforced by
+                    the transformer, not the grammar).
+  UpdateStatement — AST for UPDATE table SET col=val [, ...] [WHERE ...].
+                    Reuses BooleanExpr for the optional WHERE filter.
+  DeleteStatement — AST for DELETE FROM table [WHERE ...]. Reuses BooleanExpr.
 
 Lark is imported only in this module. No other engine module may reference lark
 types, token names, or grammar rule names (INV-P4).
@@ -120,6 +128,34 @@ class SelectStatement:
     order_by: Optional[OrderByClause] = None
     limit: Optional[int] = None
     _depth: int = field(default=0, repr=False, compare=False)
+
+
+# ── Write-operation AST dataclasses ──────────────────────────────────────────
+
+@dataclass
+class SetClause:
+    column: str
+    value: str | int | float
+
+
+@dataclass
+class InsertStatement:
+    table: str
+    columns: List[str]
+    values: List[str | int | float]
+
+
+@dataclass
+class UpdateStatement:
+    table: str
+    set_clauses: List[SetClause]
+    where: Optional[BooleanExpr] = None
+
+
+@dataclass
+class DeleteStatement:
+    table: str
+    where: Optional[BooleanExpr] = None
 
 
 # ── Internal transformer helpers ──────────────────────────────────────────────
@@ -380,13 +416,14 @@ _TRANSFORMER = _SQLTransformer()
 
 # ── Public interface ──────────────────────────────────────────────────────────
 
-def parse(query: str) -> SelectStatement:
+def parse(query: str) -> SelectStatement | InsertStatement | UpdateStatement | DeleteStatement:
     """
-    Parse a SQL-like query string and return a SelectStatement AST.
+    Parse a SQL-like query string and return a typed AST node.
 
-    Raises ValueError with a human-readable message if the query uses unsupported
-    syntax (OR, subqueries, HAVING) or is otherwise malformed. Lark internals
-    never surface to the caller.
+    Returns SelectStatement for SELECT queries, InsertStatement for INSERT,
+    UpdateStatement for UPDATE, or DeleteStatement for DELETE.
+    Raises ValueError with a human-readable message for malformed input.
+    Lark internals never surface to the caller.
     """
     try:
         tree = _PARSER.parse(query)
@@ -400,8 +437,9 @@ def parse(query: str) -> SelectStatement:
     except lark.exceptions.LarkError as exc:
         raise ValueError(f"Parse error: {exc}") from None
 
-    if not isinstance(result, SelectStatement):
-        raise ValueError("Query did not produce a valid SELECT statement.")
+    _valid_types = (SelectStatement, InsertStatement, UpdateStatement, DeleteStatement)
+    if not isinstance(result, _valid_types):
+        raise ValueError("Query did not produce a valid statement.")
 
     if result.having is not None and not result.group_by:
         raise ValueError(
