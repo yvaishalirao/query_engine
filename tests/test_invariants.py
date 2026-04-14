@@ -1,13 +1,4 @@
-"""
-Invariant tests for the query engine.
 
-INV-E1: The source DataFrame is never mutated by execute().
-INV-E2: Pipeline order is fixed -- sort before limit.
-INV-E5: df.query() and df.eval() never appear in executor.py.
-INV-P1: execute() contains an isinstance(stmt, SelectStatement) guard.
-INV-P2: OR queries are rejected at parse time -- apply_filters is never reached.
-INV-P3: Every grammar rule/alias in sql.lark has a method on the Transformer.
-"""
 
 import re
 import inspect
@@ -43,11 +34,7 @@ def test_inv_e1_source_dataframe_not_mutated():
 
 
 def test_inv_e2_sort_before_limit():
-    """INV-E2: ORDER BY must be applied before LIMIT.
-
-    If LIMIT ran first it would take an arbitrary 3-row slice, and the
-    resulting sales values would not necessarily be the 3 highest.
-    """
+    
     result = execute(parse("SELECT * FROM data ORDER BY sales DESC LIMIT 3"), CSV)
 
     assert len(result) == 3
@@ -63,12 +50,7 @@ def test_inv_e2_sort_before_limit():
 
 
 def test_inv_e5_no_df_query_or_eval_in_executor():
-    """INV-E5: executor.py must not call df.query() or df.eval() in live code.
-
-    Docstrings and comments may mention the names; only executable lines are
-    checked. A line is treated as a comment/docstring if its first non-whitespace
-    character is '#' or it is part of a triple-quoted string literal.
-    """
+    
     with open('engine/executor.py') as f:
         lines = f.readlines()
 
@@ -107,11 +89,7 @@ def test_inv_e5_no_df_query_or_eval_in_executor():
 # ── INV-P1 ────────────────────────────────────────────────────────────────────
 
 def test_inv_p1_isinstance_guard_in_execute():
-    """INV-P1: execute() must contain an isinstance(stmt, SelectStatement) guard.
-
-    Checked by inspecting the source of execute() — not just its behaviour —
-    so the guard cannot be removed without the test catching it.
-    """
+    
     source = open('engine/executor.py').read()
     assert 'isinstance(stmt, SelectStatement)' in source, (
         "execute() is missing the isinstance(stmt, SelectStatement) guard (INV-P1 violated)"
@@ -125,11 +103,7 @@ def test_inv_p1_isinstance_guard_in_execute():
     ("SELECT * FROM data WHERE sales > 9999999 OR year = 2099", 0),
 ])
 def test_inv_p2_or_routed_through_apply_filters(query, expected_rows):
-    """INV-P2: OR queries must be routed through apply_filters, not rejected.
-
-    OR is supported since EX1. apply_filters must be called exactly once per
-    execute() call and must receive an OrExpr (not a list or raw Condition).
-    """
+  
     from engine.parser import OrExpr as _OrExpr
     original_apply_filters = __import__('engine.executor', fromlist=['apply_filters']).apply_filters
 
@@ -156,22 +130,7 @@ def test_inv_p2_or_routed_through_apply_filters(query, expected_rows):
 # ── INV-P3 ────────────────────────────────────────────────────────────────────
 
 def _required_transformer_methods() -> set[str]:
-    """
-    Derive the set of method names the Transformer must implement from sql.lark.
-
-    Rules:  In lark, when ALL alternatives of a rule carry '-> alias' annotations,
-            lark calls the alias method instead of the rule name method. So:
-              - Every alias name (from '-> name') always needs a method.
-              - A rule name needs a method only if NOT all of its alternatives
-                are aliased (i.e. the rule name appears as a tree node).
-
-    Strategy:
-      1. Strip comments.
-      2. Find all alias targets ('-> name').
-      3. Find all rule definitions (lowercase names followed by ':').
-      4. For each rule, check if all alternatives are aliased; if so, the rule
-         name itself does NOT need a method.
-    """
+    
     grammar = open('engine/sql.lark').read()
     # Strip line comments
     grammar = re.sub(r'//[^\n]*', '', grammar)
@@ -203,7 +162,7 @@ def _required_transformer_methods() -> set[str]:
 
 
 def test_inv_p3_every_grammar_rule_has_transformer_method():
-    """INV-P3: Every rule/alias in sql.lark must have a method on _SQLTransformer."""
+
     required = _required_transformer_methods()
     transformer_methods = {
         name for name, _ in inspect.getmembers(_SQLTransformer, predicate=inspect.isfunction)
@@ -232,7 +191,7 @@ def _cli(query: str, csv: str = 'data/sample.csv') -> str:
 # ── INV-O1 ────────────────────────────────────────────────────────────────────
 
 def test_inv_o1_no_raw_exception_in_stdout():
-    """INV-O1: Errors must surface as 'Error: ...' messages, never raw tracebacks."""
+  
     stdout = _cli("SELECT ghost_col FROM data WHERE ghost_col > 0")
 
     forbidden = ['Traceback', 'KeyError', 'UnexpectedToken', 'Exception']
@@ -249,7 +208,7 @@ def test_inv_o1_no_raw_exception_in_stdout():
 # ── INV-O2 ────────────────────────────────────────────────────────────────────
 
 def test_inv_o2_empty_result_shows_headers():
-    """INV-O2: A query that matches no rows must still print column headers."""
+   
     stdout = _cli("SELECT * FROM data WHERE region = 'NonExistentRegion' LIMIT 5")
 
     assert stdout.strip(), "stdout is empty for zero-row result (INV-O2 violated)"
@@ -267,7 +226,7 @@ def test_inv_o2_empty_result_shows_headers():
 # ── INV-O3 ────────────────────────────────────────────────────────────────────
 
 def test_inv_o3_output_contains_only_selected_columns():
-    """INV-O3: stdout must contain exactly the columns named in SELECT."""
+   
     stdout = _cli("SELECT region, sales FROM data LIMIT 3")
 
     # The first non-empty line of tabulate 'simple' output is the header row.
